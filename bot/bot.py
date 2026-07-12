@@ -17,7 +17,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from armor_handler import register_armor_handlers
 from youtube_thumbnail_handler import register_youtube_thumbnail_handlers
-from achievement_handler import register_achievement_handlers
 from link_download_handler import register_link_download_handlers
 import aiohttp
 from mod_search_handler import register_mod_search_handlers
@@ -219,7 +218,6 @@ def strip_html_tags(text: str) -> str:
 
 # ثبت هندلرهای دانلود تامنیل یوتیوب (بعد از تعریف get_access_block_message)
 register_youtube_thumbnail_handlers(dp, bot, get_access_block_message)
-register_achievement_handlers(dp, bot, get_access_block_message)
 register_link_download_handlers(dp, bot, get_access_block_message)
 register_mod_search_handlers(dp, bot, get_access_block_message)
 
