@@ -1,0 +1,23 @@
+{
+  "name": "cacti-ui-processor",
+  "version": "2.0.0",
+  "type": "module",
+  "main": "processor.mjs",
+  "scripts": {
+    "start": "node processor.mjs",
+    "item3d": "node item3d.mjs"
+  },
+  "dependencies": {
+    "potrace": "^2.1.8",
+    "earcut": "^2.2.4",
+    "archiver": "^7.0.1",
+    "@napi-rs/canvas": "^0.1.51",
+    "sharp": "^0.33.5",
+    "unzipper": "^0.10.14",
+    "three": "^0.179.1",
+    "three-stdlib": "^2.36.0",
+    "@gltf-transform/core": "^4.1.0",
+    "@gltf-transform/functions": "^4.1.0",
+    "@gltf-transform/extensions": "^4.1.0"
+  }
+}
