@@ -1,10 +1,13 @@
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
+import os
 
 Base = declarative_base()
 
-engine = create_engine('sqlite:///licenses.db', echo=False)
+DB_DIR = os.getenv("DB_DIR", ".")
+os.makedirs(DB_DIR, exist_ok=True)
+engine = create_engine(f'sqlite:///{DB_DIR}/licenses.db', echo=False)
 Session = sessionmaker(bind=engine)
 
 class License(Base):
