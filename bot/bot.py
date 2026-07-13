@@ -90,6 +90,7 @@ class ResourcePackManualState(StatesGroup):
 
 class ResourcePackSettingsState(StatesGroup):
     choosing_percent = State()
+    choosing_upscale = State()
 
 # گزینه‌های زمانی لایسنس به ترتیب چرخش: (متن نمایشی, مقدار به دقیقه / None برای همیشگی / "custom" برای دلخواه)
 LICENSE_TIME_OPTIONS = [
@@ -260,7 +261,36 @@ def build_rp_percent_kb(percent_int: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕5", callback_data="rp_xp_inc5"),
             InlineKeyboardButton(text="➕10", callback_data="rp_xp_inc10"),
         ],
-        [InlineKeyboardButton(text="✅ شروع پردازش", callback_data="rp_xp_start", style="success")],
+        [InlineKeyboardButton(text="➡️ بعدی", callback_data="rp_xp_next", style="success")],
+    ])
+
+
+# ====================== HUD OVERLAY - انتخاب مقدار Upscale ======================
+DEFAULT_UPSCALE_INT = 1  # مقدار پیش‌فرض Upscale (عدد صحیح 1 تا 10)
+
+
+def _rp_upscale_int(state_data: dict) -> int:
+    return state_data.get("rp_upscale_int", DEFAULT_UPSCALE_INT)
+
+
+def build_rp_upscale_text(upscale_int: int) -> str:
+    return (
+        "🔍 <b>تنظیم Upscale</b>\n\n"
+        f"📈 مقدار فعلی: <b>x{upscale_int}</b>\n\n"
+        "با دکمه‌های پایین مقدار رو کم/زیاد کن و بعد «شروع پردازش» رو بزن."
+    )
+
+
+def build_rp_upscale_kb(upscale_int: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📈 x{upscale_int}", callback_data="rp_up_noop")],
+        [
+            InlineKeyboardButton(text="➖2", callback_data="rp_up_dec2"),
+            InlineKeyboardButton(text="➖1", callback_data="rp_up_dec1"),
+            InlineKeyboardButton(text="➕1", callback_data="rp_up_inc1"),
+            InlineKeyboardButton(text="➕2", callback_data="rp_up_inc2"),
+        ],
+        [InlineKeyboardButton(text="✅ شروع پردازش", callback_data="rp_up_start", style="success")],
     ])
 
 
@@ -1414,8 +1444,8 @@ async def ask_for_pack(message: types.Message):
         "📦 <b>ساخت HUD Overlay از ریسورس پک</b>\n\n"
         "📤 فایل ریسورس پکتو همینجا بفرست.\n"
         "فقط فرمت <code>.zip</code> یا <code>.mcpack</code> قبول میشه.\n\n"
-        "<blockquote>💡 بعد از دریافت فایل، یه صفحه برای تنظیم درصد نوار XP باز میشه؛ "
-        "خودت درصد رو تنظیم می‌کنی و بعدش پردازش شروع میشه.\n"
+        "<blockquote>💡 بعد از دریافت فایل، یه صفحه برای تنظیم درصد نوار XP باز میشه و بعدش صفحه‌ی تنظیم Upscale؛ "
+        "خودت این دو مقدار رو تنظیم می‌کنی و بعدش پردازش شروع میشه.\n"
         "⏱ زمان تقریبی پردازش: ۱۰ تا ۲۵ ثانیه (بسته به حجم پک)</blockquote>",
         parse_mode="HTML"
     )
@@ -3223,10 +3253,10 @@ async def _send_asset_files(callback: types.CallbackQuery, files: list, user_id:
 
 # ====================== HUD OVERLAY - تنظیمات و انتخاب درصد XP ======================
 
-async def _process_resource_pack(answer_target, user_id: int, input_path: str, output_path: str, doc_name: str, xp_percent: float):
+async def _process_resource_pack(answer_target, user_id: int, input_path: str, output_path: str, doc_name: str, xp_percent: float, upscale_rate: int = 1):
     """اجرای واقعی پردازش پک و ارسال نتیجه یا خطا. answer_target هر آبجکتی با متد answer/answer_document (message یا callback.message)."""
     try:
-        await run_node_processor(input_path, output_path, xp_percent=xp_percent)
+        await run_node_processor(input_path, output_path, xp_percent=xp_percent, upscale_rate=upscale_rate)
         user_modes.pop(user_id, None)
         await answer_target.answer_document(FSInputFile(output_path), caption="✅ ریسورس پک پردازش و UI ساخته شد!")
     except Exception as e:
@@ -3295,14 +3325,67 @@ async def rp_xp_inc10(callback: types.CallbackQuery, state: FSMContext):
     await _rp_adjust_percent(callback, state, 10)
 
 
-@dp.callback_query(ResourcePackSettingsState.choosing_percent, F.data == "rp_xp_start")
-async def rp_xp_start(callback: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(ResourcePackSettingsState.choosing_percent, F.data == "rp_xp_next")
+async def rp_xp_next(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.update_data(rp_upscale_int=DEFAULT_UPSCALE_INT)
+    await state.set_state(ResourcePackSettingsState.choosing_upscale)
+    await callback.message.edit_text(
+        build_rp_upscale_text(DEFAULT_UPSCALE_INT),
+        parse_mode="HTML",
+        reply_markup=build_rp_upscale_kb(DEFAULT_UPSCALE_INT)
+    )
+    await callback.answer()
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_noop")
+async def rp_up_noop(callback: types.CallbackQuery, state: FSMContext):
+    # این دکمه فقط مقدار فعلی رو نشون می‌ده و کاری انجام نمی‌ده
+    await callback.answer()
+
+
+async def _rp_adjust_upscale(callback: types.CallbackQuery, state: FSMContext, delta: int):
+    data = await state.get_data()
+    current = _rp_upscale_int(data)
+    new_value = max(1, min(10, current + delta))
+    await state.update_data(rp_upscale_int=new_value)
+    await callback.message.edit_text(
+        build_rp_upscale_text(new_value),
+        parse_mode="HTML",
+        reply_markup=build_rp_upscale_kb(new_value)
+    )
+    await callback.answer()
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_dec2")
+async def rp_up_dec2(callback: types.CallbackQuery, state: FSMContext):
+    await _rp_adjust_upscale(callback, state, -2)
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_dec1")
+async def rp_up_dec1(callback: types.CallbackQuery, state: FSMContext):
+    await _rp_adjust_upscale(callback, state, -1)
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_inc1")
+async def rp_up_inc1(callback: types.CallbackQuery, state: FSMContext):
+    await _rp_adjust_upscale(callback, state, 1)
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_inc2")
+async def rp_up_inc2(callback: types.CallbackQuery, state: FSMContext):
+    await _rp_adjust_upscale(callback, state, 2)
+
+
+@dp.callback_query(ResourcePackSettingsState.choosing_upscale, F.data == "rp_up_start")
+async def rp_up_start(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     data = await state.get_data()
     input_path = data.get("rp_input_path")
     output_path = data.get("rp_output_path")
     doc_name = data.get("rp_doc_name", "")
     xp_percent = _rp_xp_percent_int(data) / 100
+    upscale_rate = _rp_upscale_int(data)
 
     if not input_path or not os.path.exists(input_path):
         await callback.answer("❌ فایل پک پیدا نشد. لطفاً دوباره ارسال کن.", show_alert=True)
@@ -3317,7 +3400,7 @@ async def rp_xp_start(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=None,
         parse_mode="HTML"
     )
-    await _process_resource_pack(callback.message, user_id, input_path, output_path, doc_name, xp_percent)
+    await _process_resource_pack(callback.message, user_id, input_path, output_path, doc_name, xp_percent, upscale_rate)
     await state.clear()
 
 
