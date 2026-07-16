@@ -32,6 +32,15 @@ class License(Base):
     # برای اینکه پیام «لایسنس تموم شده» فقط یک‌بار برای کاربر ارسال شود
     expired_notified = Column(Boolean, default=False)
 
+    # ====================== لایسنس هوش مصنوعی (محدود به تعداد استفاده) ======================
+    # این لایسنس‌ها به‌جای محدودیت زمانی، با تعداد قابلیت مجاز محدود می‌شوند.
+    # کلید این لایسنس‌ها با پسوند "_AI" ساخته می‌شود (مثلاً AB12-CD34-EF56-GH78_AI).
+    is_ai_license = Column(Boolean, default=False)
+    # حداکثر تعداد قابلیتی که این لایسنس اجازه می‌دهد (پیش‌فرض 2)
+    ai_uses_limit = Column(Integer, nullable=True)
+    # تعداد باقیمانده؛ فقط وقتی یک قابلیت با موفقیت کامل شد (فایل نهایی ارسال شد) کم می‌شود
+    ai_uses_left = Column(Integer, nullable=True)
+
 Base.metadata.create_all(engine)
 
 
@@ -45,6 +54,9 @@ def _ensure_new_columns():
             "duration_minutes": "INTEGER",
             "expires_at": "DATETIME",
             "expired_notified": "BOOLEAN DEFAULT 0",
+            "is_ai_license": "BOOLEAN DEFAULT 0",
+            "ai_uses_limit": "INTEGER",
+            "ai_uses_left": "INTEGER",
         }
         for col_name, col_type in new_columns.items():
             if col_name not in existing_cols:
