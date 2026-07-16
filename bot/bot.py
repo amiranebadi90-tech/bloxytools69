@@ -84,6 +84,9 @@ class AdminState(StatesGroup):
 class LicenseCreateState(StatesGroup):
     waiting_custom_minutes = State()
 
+class AiLicenseCreateState(StatesGroup):
+    waiting_quantity = State()
+
 class ResourcePackManualState(StatesGroup):
     waiting_icon = State()
     waiting_inventory = State()
@@ -135,12 +138,29 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ====================== LICENSE ======================
+# لایسنس معمولی: XXXX-XXXX-XXXX-XXXX
+# لایسنس هوش مصنوعی: XXXX-XXXX-XXXX-XXXX_AI (همان فرمت + پسوند _AI)
+# این لایسنس‌ها توسط ادمین به‌صورت دسته‌جمعی ساخته می‌شوند و متن‌شان در
+# فایل AI_LICENCE.txt در روت سایت قرار می‌گیرد تا دستیار هوش مصنوعی سایت
+# یکی‌یکی آن‌ها را به کاربرانی که درخواست می‌کنند بدهد. جزئیات کامل در
+# AI_LICENSE_SYSTEM.md
 LICENSE_REGEX = r"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$"
+AI_LICENSE_SUFFIX = "_AI"
+LICENSE_REGEX_WITH_AI = r"^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}(_AI)?$"
+# مدت اعتبار ثابت لایسنس‌های هوش مصنوعی پس از فعال‌سازی (به دقیقه)
+AI_LICENSE_DURATION_MINUTES = 30
+# حداکثر تعداد لایسنس هوش مصنوعی که ادمین می‌تواند در یک درخواست بسازد
+AI_LICENSE_MAX_BATCH = 500
 
 
 def generate_license():
     chars = string.ascii_uppercase + string.digits
     return '-'.join(''.join(random.choices(chars, k=4)) for _ in range(4))
+
+
+def generate_ai_license():
+    """یک کد لایسنس هوش مصنوعی می‌سازد: فرمت معمولی + پسوند _AI."""
+    return generate_license() + AI_LICENSE_SUFFIX
 
 
 def is_admin(user_id: int):
@@ -440,6 +460,7 @@ def admin_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔑 ساخت لایسنس جدید")],
+            [KeyboardButton(text="🤖 لایسنس‌های هوش مصنوعی")],
             [KeyboardButton(text="📢 اطلاع‌رسانی")],
             [KeyboardButton(text="🛠 سیستم مدیریت")],
             [KeyboardButton(text="🧪 تست پنل کاربر")],
@@ -828,8 +849,79 @@ async def receive_custom_license_minutes(message: types.Message, state: FSMConte
         sel["message_id"] = sent.message_id
 
 
+# ====================== AI LICENSE BATCH GENERATION ======================
+@dp.message(F.text == "🤖 لایسنس‌های هوش مصنوعی")
+async def create_ai_licenses(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.set_state(AiLicenseCreateState.waiting_quantity)
+    await message.answer(
+        "🤖 <b>ساخت لایسنس‌های هوش مصنوعی</b>\n\n"
+        "<blockquote>این لایسنس‌ها با دستی معمولی فرق دارند: به کاربر مستقیم داده "
+        f"نمی‌شوند، بلکه توسط دستیار هوش مصنوعی سایت از روی فایل AI_LICENCE.txt "
+        f"یکی‌یکی به کاربران داده می‌شوند. هر کدام فقط یک‌بار قابل استفاده هستند و "
+        f"بعد از فعال‌سازی {AI_LICENSE_DURATION_MINUTES} دقیقه اعتبار دارند.</blockquote>\n\n"
+        f"چند عدد لایسنس هوش مصنوعی بسازم؟ (عدد صحیح بین 1 تا {AI_LICENSE_MAX_BATCH})",
+        parse_mode="HTML"
+    )
+
+
+@dp.message(AiLicenseCreateState.waiting_quantity)
+async def receive_ai_license_quantity(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    text = message.text.strip() if message.text else ""
+    if not text.isdigit() or not (1 <= int(text) <= AI_LICENSE_MAX_BATCH):
+        await message.answer(
+            f"❌ لطفاً فقط یک عدد صحیح بین 1 تا {AI_LICENSE_MAX_BATCH} ارسال کنید."
+        )
+        return
+
+    quantity = int(text)
+    await state.clear()
+
+    session = Session()
+    try:
+        keys = []
+        # تولید کدها با اطمینان از یکتا بودن نسبت به چیزی که از قبل در دیتابیس هست
+        while len(keys) < quantity:
+            candidate = generate_ai_license()
+            exists = session.query(License).filter_by(key=candidate).first()
+            if exists or candidate in keys:
+                continue
+            keys.append(candidate)
+            session.add(License(key=candidate, duration_minutes=AI_LICENSE_DURATION_MINUTES))
+        session.commit()
+    finally:
+        session.close()
+
+    # نوشتن خروجی در یک فایل txt که مستقیماً قابل کپی در AI_LICENCE.txt است
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(OUTPUT_DIR, f"ai_licenses_{timestamp}.txt")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(keys) + "\n")
+
+    try:
+        await message.answer_document(
+            FSInputFile(out_path),
+            caption=(
+                f"✅ {quantity} لایسنس هوش مصنوعی ساخته شد.\n\n"
+                "این فایل رو باز کن، محتواش رو کپی کن و در انتهای فایل "
+                "AI_LICENCE.txt (در روت سایت) پیست کن — هر خط یک کد. "
+                "دستیار هوش مصنوعی سایت خودش این کدها رو یکی‌یکی به کاربرا میده."
+            )
+        )
+    finally:
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+
+
 # ====================== LICENSE CHECK ======================
-@dp.message(F.text.regexp(LICENSE_REGEX))
+@dp.message(F.text.regexp(LICENSE_REGEX_WITH_AI))
 async def check_license(message: types.Message):
     if is_admin(message.from_user.id):
         return
