@@ -163,6 +163,110 @@ def generate_ai_license():
     return generate_license() + AI_LICENSE_SUFFIX
 
 
+# ====================== لیمیتِ مصرفِ لایسنسِ آزمایشیِ هوش مصنوعی ======================
+# فقط این ۴ امکان، از سقفِ مشترکِ ۱۰۰٪ لیمیت مصرف می‌کنند؛ بقیه‌ی امکاناتِ بات
+# (دانلود تامنیل، دانلود با لینک، جستجوی مود، گرفتنِ فایل‌های آماده) برای
+# لایسنسِ آزمایشی هم محدودیتی ندارند. درصدها طبق تصمیمِ ادمین تعیین شده‌اند.
+AI_QUOTA_LIMITED_FEATURES = {
+    "hud": {"label": "📦 ساخت HUD Overlay از ریسورس پک", "cost": 25},
+    "item3d": {"label": "🧊 ساخت آیتم سه‌بعدی ماینکرافت", "cost": 19},
+    "json2obj": {"label": "🔄 تبدیل JSON به OBJ", "cost": 35},
+    "armor": {"label": "🛡 ساخت آرمور با تریم", "cost": 30},
+}
+
+
+def get_active_ai_trial_license(session, user_id: int):
+    """
+    اگر تمامِ لایسنس‌های *فعالِ* این کاربر از نوع آزمایشیِ هوش‌مصنوعی (پسوند _AI) باشند،
+    همان رکورد (اونی که کمترین مصرف رو داره) برگردانده می‌شود تا لیمیت روش اعمال بشه.
+    اگر کاربر حتی یک لایسنسِ کاملِ (غیر AI) فعال داشته باشد، یا اصلاً لایسنسِ فعالی نداشته
+    باشد، None برمی‌گردد (یعنی محدودیتی در کار نیست).
+    """
+    now = datetime.utcnow()
+    active = [
+        l for l in session.query(License).filter(
+            License.user_id == user_id, License.used == True
+        ).all()
+        if l.expires_at is None or l.expires_at > now
+    ]
+    if not active:
+        return None
+    if any(not l.key.endswith(AI_LICENSE_SUFFIX) for l in active):
+        return None
+    ai_licenses = [l for l in active if l.key.endswith(AI_LICENSE_SUFFIX)]
+    ai_licenses.sort(key=lambda l: (l.ai_quota_used or 0))
+    return ai_licenses[0]
+
+
+def ai_quota_block_text(feature_label: str) -> str:
+    return (
+        "⛔️ <b>لیمیتِ لایسنسِ آزمایشیِ شما تمام شده</b>\n\n"
+        "<blockquote>لایسنسِ هوش‌مصنوعیِ شما یک لایسنسِ <b>آزمایشی</b> است و سقفِ مصرفِ "
+        f"۱۰۰٪ آن پر شده؛ به همین خاطر دیگه نمی‌تونید از «{feature_label}» (یا سایرِ امکاناتِ "
+        "دارای لیمیت) استفاده کنید.</blockquote>\n\n"
+        "<blockquote>💎 برای دسترسیِ کامل و بدونِ محدودیت، یک لایسنسِ اصلی از ادمین تهیه کنید:\n"
+        "@Amirmah198</blockquote>"
+    )
+
+
+async def check_ai_quota_gate(answer_target, user_id: int, feature_key: str) -> bool:
+    """
+    قبل از شروعِ پردازشِ یکی از ۴ قابلیتِ محدود صدا زده می‌شود. اگر کاربر لایسنسِ کاملی
+    داشته باشد یا اصلاً لایسنسِ AI ای در کار نباشد True برمی‌گرداند (بدون هیچ پیامی).
+    اگر لیمیت پر شده باشد پیام مناسب را می‌فرستد و False برمی‌گرداند — در این حالت هندلر
+    فراخواننده نباید ادامه‌ی پردازش را انجام دهد.
+    """
+    info = AI_QUOTA_LIMITED_FEATURES[feature_key]
+    session = Session()
+    try:
+        lic = get_active_ai_trial_license(session, user_id)
+        if lic is None:
+            return True
+        if (lic.ai_quota_used or 0) >= 100:
+            await answer_target.answer(ai_quota_block_text(info["label"]), parse_mode="HTML")
+            return False
+        return True
+    finally:
+        session.close()
+
+
+async def consume_ai_quota(answer_target, user_id: int, feature_key: str):
+    """
+    فقط بعد از تحویلِ *موفقِ* فایلِ نهایی به کاربر صدا زده می‌شود. اگر کاربر لایسنسِ آزمایشیِ
+    فعال داشته باشد، به‌اندازه‌ی هزینه‌ی این قابلیت از لیمیتش کم می‌کند و یک پیامِ گزارش
+    (چند درصد مصرف شد / چقدر مونده) می‌فرستد. برای کاربرانِ با لایسنسِ کامل کاری انجام نمی‌دهد.
+    """
+    info = AI_QUOTA_LIMITED_FEATURES[feature_key]
+    session = Session()
+    try:
+        lic = get_active_ai_trial_license(session, user_id)
+        if lic is None:
+            return
+
+        used_before = lic.ai_quota_used or 0
+        used_after = min(100, used_before + info["cost"])
+        lic.ai_quota_used = used_after
+        session.commit()
+        remaining = max(0, 100 - used_after)
+
+        if used_after >= 100:
+            text = (
+                f"🧪 <b>{info['cost']}٪</b> از لیمیتِ لایسنسِ آزمایشی برای «{info['label']}» مصرف شد.\n\n"
+                "<blockquote>⛔️ لیمیتِ ۱۰۰٪یِ لایسنسِ آزمایشیِ شما به پایان رسید. برای ادامه‌ی استفاده "
+                "از این چهار امکان، یک لایسنسِ اصلی و کامل از ادمین تهیه کنید:\n@Amirmah198</blockquote>"
+            )
+        else:
+            text = (
+                f"🧪 <b>{info['cost']}٪</b> از لیمیتِ لایسنسِ آزمایشی برای «{info['label']}» مصرف شد.\n\n"
+                "<blockquote>📊 مجموعِ مصرف‌شده تا الان: "
+                f"<b>{used_after}٪</b> از ۱۰۰٪\n"
+                f"باقی‌مانده: <b>{remaining}٪</b></blockquote>"
+            )
+        await answer_target.answer(text, parse_mode="HTML")
+    finally:
+        session.close()
+
+
 def is_admin(user_id: int):
     return user_id == ADMIN_ID
 
@@ -566,6 +670,64 @@ def build_welcome_activated_text(first_name: str) -> str:
     )
 
 
+def build_ai_trial_activated_text(first_name: str) -> str:
+    """
+    پیامی که بلافاصله بعد از فعال‌سازیِ یک لایسنسِ *آزمایشیِ هوش‌مصنوعی* نشان داده می‌شود.
+    برخلافِ لایسنسِ معمولی، اینجا باید همه‌چیز درباره‌ی محدودیت‌ها (زمان + لیمیتِ مصرف)
+    کاملاً شفاف توضیح داده بشه، چون کاربر با یک لایسنسِ رایگان و کوتاه‌مدت طرفه.
+    """
+    feature_lines = "\n".join(
+        f"▫️ {info['label']} — <b>{info['cost']}٪</b> از لیمیت"
+        for info in AI_QUOTA_LIMITED_FEATURES.values()
+    )
+    return (
+        f"🧪 <b>{first_name} عزیز، لایسنسِ آزمایشیِ هوش مصنوعیِ شما فعال شد!</b>\n\n"
+
+        "<blockquote>این یک لایسنسِ <b>تستی و رایگان</b> است، نه یک لایسنسِ کامل — دستیارِ "
+        "هوش مصنوعیِ سایت این کد رو مستقیم بهت داد تا بتونی امکاناتِ بات رو امتحان کنی.</blockquote>\n\n"
+
+        "<blockquote>⏱ <b>مدتِ اعتبار: فقط ۳۰ دقیقه</b> از همینِ الان.\n"
+        "بعد از این ۳۰ دقیقه، لایسنس خودکار منقضی می‌شه و برای ادامه‌ی کار باید یک "
+        "لایسنسِ اصلی از ادمین تهیه کنی.</blockquote>\n\n"
+
+        "<blockquote>🎯 این لایسنس <b>یک‌بار مصرف</b> است — یعنی همین یک کدی که الان فعال "
+        "کردی، هیچ‌جای دیگه‌ای (حتی دوباره برای خودت) قابلِ استفاده نیست.</blockquote>\n\n"
+
+        "<blockquote>📊 <b>لیمیتِ مصرف (سقفِ ۱۰۰٪):</b>\n"
+        "این چهار امکان یک «لیمیتِ مشترکِ ۱۰۰٪ی» دارن؛ هر بار که ازشون استفاده کنی و بات "
+        "فایلِ نهایی رو بهت بده، بخشی از این لیمیت مصرف می‌شه:\n\n"
+        f"{feature_lines}</blockquote>\n\n"
+
+        "<blockquote>♻️ اگه لیمیتت مثلاً ۹۰٪ پر شده باشه، بازم اجازه داری یه امکانِ دیگه رو "
+        "امتحان کنی — همون یکی که لیمیت رو کامل می‌کنه — و بعدش این چهار امکان برات بسته "
+        "می‌شن (بقیه‌ی امکاناتِ بات مثلِ دانلودِ تامنیل، دانلودِ با لینک و جستجوی مود، "
+        "محدودیتی ندارن و تا وقتی لایسنست منقضی نشه آزادانه در دسترسن).</blockquote>\n\n"
+
+        "<blockquote>💎 اگه بات رو دوست داشتی و خواستی بدونِ محدودیتِ زمان و لیمیتِ مصرف "
+        "ازش استفاده کنی، برای گرفتنِ لایسنسِ کامل به ادمین پیام بده:\n@Amirmah198</blockquote>\n\n"
+
+        "برای شروع، یکی از گزینه‌های زیر رو انتخاب کن 👇"
+    )
+
+
+def build_ai_trial_welcome_back_text(first_name: str, lic) -> str:
+    """پیامِ /start برای کاربری که یک لایسنسِ آزمایشیِ هوش‌مصنوعیِ هنوز-فعال دارد."""
+    now = datetime.utcnow()
+    remaining_minutes = 0
+    if lic.expires_at:
+        remaining_minutes = max(0, int((lic.expires_at - now).total_seconds() // 60))
+    used = lic.ai_quota_used or 0
+    remaining_quota = max(0, 100 - used)
+    return (
+        f"🧪 سلام {first_name} 👋\n\n"
+        "<blockquote>لایسنسِ آزمایشیِ هوش‌مصنوعیِ شما هنوز فعاله:\n\n"
+        f"⏱ زمانِ باقی‌مانده: تقریباً <b>{remaining_minutes} دقیقه</b>\n"
+        f"📊 لیمیتِ باقی‌مانده (برای HUD / آیتم سه‌بعدی / JSON به OBJ / آرمور): "
+        f"<b>{remaining_quota}٪</b> از ۱۰۰٪</blockquote>\n\n"
+        "یکی از گزینه‌های زیر رو انتخاب کن 👇"
+    )
+
+
 def build_no_license_text(first_name: str) -> str:
     """پیام خوش‌آمدگویی برای کاربرانی که هنوز لایسنسی فعال نکرده‌اند."""
     return (
@@ -772,8 +934,19 @@ async def start(message: types.Message):
 
     if block_msg is None:
         # کاربر لایسنس فعال دارد → کیبورد اصلی واقعی کاربر نمایش داده شود
+        session = Session()
+        try:
+            ai_trial_lic = get_active_ai_trial_license(session, message.from_user.id)
+            if ai_trial_lic is not None:
+                welcome_text = build_ai_trial_welcome_back_text(first_name, ai_trial_lic)
+            else:
+                welcome_text = build_welcome_back_text(first_name)
+        finally:
+            session.close()
+
         await message.answer(
-            build_welcome_back_text(first_name),
+            welcome_text,
+            parse_mode="HTML",
             reply_markup=user_main_keyboard(message.from_user.id)
         )
     else:
@@ -948,8 +1121,12 @@ async def check_license(message: types.Message):
             session.commit()
 
             first_name = message.from_user.first_name or "دوست عزیز"
+            if license_glb.key.endswith(AI_LICENSE_SUFFIX):
+                activation_text = build_ai_trial_activated_text(first_name)
+            else:
+                activation_text = build_welcome_activated_text(first_name)
             await message.answer(
-                build_welcome_activated_text(first_name),
+                activation_text,
                 parse_mode="HTML",
                 reply_markup=user_main_keyboard(message.from_user.id)
             )
@@ -1046,10 +1223,15 @@ async def auto_activate_license(callback: types.CallbackQuery):
     # معمولی در آن بفرستد یا اصلاً منطقی نیست منوی شخصی آنجا نمایش داده شود.
     target_chat_id = user.id
     first_name = user.first_name or "دوست عزیز"
+    activation_text = (
+        build_ai_trial_activated_text(first_name)
+        if key.endswith(AI_LICENSE_SUFFIX)
+        else build_welcome_activated_text(first_name)
+    )
     try:
         await bot.send_message(
             target_chat_id,
-            build_welcome_activated_text(first_name),
+            activation_text,
             parse_mode="HTML",
             reply_markup=user_main_keyboard(user.id)
         )
@@ -1530,6 +1712,8 @@ async def ask_for_pack(message: types.Message):
     if block_msg:
         await message.answer(block_msg, parse_mode="HTML")
         return
+    if not await check_ai_quota_gate(message, message.from_user.id, "hud"):
+        return
 
     user_modes[message.from_user.id] = "resource_pack"
     await message.answer(
@@ -1549,6 +1733,8 @@ async def minecraft_3d(message: types.Message):
     if block_msg:
         await message.answer(block_msg, parse_mode="HTML")
         return
+    if not await check_ai_quota_gate(message, message.from_user.id, "item3d"):
+        return
 
     user_modes[message.from_user.id] = "minecraft_3d"
     await message.answer(
@@ -1565,6 +1751,8 @@ async def json_to_obj_mode(message: types.Message):
     block_msg = get_access_block_message(message.from_user.id)
     if block_msg:
         await message.answer(block_msg, parse_mode="HTML")
+        return
+    if not await check_ai_quota_gate(message, message.from_user.id, "json2obj"):
         return
 
     user_modes[message.from_user.id] = "json_to_obj"
@@ -1697,6 +1885,7 @@ async def handle_document(message: types.Message, state: FSMContext):
             output_file = await run_item3d(input_path, output_obj)
             user_modes.pop(user_id, None)
             await message.answer_document(FSInputFile(output_file), caption="✅ مدل سه‌بعدی با موفقیت ساخته شد!")
+            await consume_ai_quota(message, user_id, "item3d")
             if os.path.exists(input_path):
                 os.remove(input_path)
         except Exception as e:
@@ -1785,6 +1974,7 @@ async def handle_document(message: types.Message, state: FSMContext):
                         f"• {base_name}.mtl\n"
                         f"• {os.path.basename(texture_path)}"
             )
+            await consume_ai_quota(message, user_id, "json2obj")
 
         except Exception as e:
             await message.answer(f"❌ خطا:\n{str(e)}")
@@ -3351,6 +3541,7 @@ async def _process_resource_pack(answer_target, user_id: int, input_path: str, o
         await run_node_processor(input_path, output_path, xp_percent=xp_percent, upscale_rate=upscale_rate)
         user_modes.pop(user_id, None)
         await answer_target.answer_document(FSInputFile(output_path), caption="✅ ریسورس پک پردازش و UI ساخته شد!")
+        await consume_ai_quota(answer_target, user_id, "hud")
     except Exception as e:
         err_text = str(e)
         # همیشه خطای کامل رو تو لاگ سرور چاپ کن، چون پیام کوتاه‌شده‌ای که به
@@ -3639,6 +3830,7 @@ async def manual_receive_inventory(message: types.Message, state: FSMContext):
             FSInputFile(output_path),
             caption="✅ پردازش موفق!\n🎨 UI پک از فایل‌های دستی ساخته شد."
         )
+        await consume_ai_quota(message, user_id, "hud")
         await state.clear()
         user_modes.pop(user_id, None)
         user_data.pop(user_id, None)
