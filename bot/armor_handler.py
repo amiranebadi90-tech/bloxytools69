@@ -549,10 +549,12 @@ def register_armor_handlers(dp: Dispatcher, bot: Bot):
     async def start(message: types.Message):
         uid = message.from_user.id
         try:
-            from bot import get_access_block_message
+            from bot import get_access_block_message, check_ai_quota_gate
             block_msg = get_access_block_message(uid)
             if block_msg:
                 await message.answer(block_msg)
+                return
+            if not await check_ai_quota_gate(message, uid, "armor"):
                 return
         except ImportError:
             pass
@@ -909,6 +911,11 @@ async def _build_and_send(cb: types.CallbackQuery, s: dict):
 
     if sent:
         await cb.message.answer("✅ آرمور با موفقیت ساخته شد!")
+        try:
+            from bot import consume_ai_quota
+            await consume_ai_quota(cb.message, uid, "armor")
+        except ImportError:
+            pass
 
     armor_build_state.pop(uid, None)
         # نکته: preview_msg_id داخل s بود و با pop شدن state پاک می‌شود؛
